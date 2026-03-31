@@ -70,9 +70,11 @@ repos:
   - name: carbon-apimgt
     url: https://github.com/wso2/carbon-apimgt
     shallow: true
+    tag: v9.30.67
   - name: carbon-kernel
     url: https://github.com/wso2/carbon-kernel
     shallow: true
+    tag: v4.9.27
   # ... typically 50-200+ repos depending on the product
 ```
 
@@ -81,6 +83,7 @@ Each entry includes:
 - **name** -- repository name
 - **url** -- full GitHub clone URL
 - **shallow** -- always `true` (shallow clones are used during discovery)
+- **tag** -- *(optional)* git tag matching the dependency version pinned in the seed repo's POM (e.g. `v9.30.67`). Present for depth-1 repos whose version could be resolved from the seed's `<properties>`. Omitted when the version is unknown.
 
 ## How it works
 

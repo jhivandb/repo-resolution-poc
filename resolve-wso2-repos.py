@@ -60,6 +60,7 @@ class RepoEntry:
     org: str
     shallow: bool = True
     discovered_via: str = ""
+    tag: str = ""  # git tag (e.g. "v9.30.67"), empty = default branch
 
 
 # ---------------------------------------------------------------------------
@@ -635,6 +636,66 @@ def extract_p2_features(product_path: Path) -> list[MavenArtifact]:
 
 
 # ---------------------------------------------------------------------------
+# POM property & version helpers
+# ---------------------------------------------------------------------------
+
+_VERSION_RANGE_RE = re.compile(r"^[\[\(]")
+_PROPERTY_REF_RE = re.compile(r"\$\{(.+?)}")
+
+
+def parse_pom_properties(repo_path: Path) -> dict[str, str]:
+    """Parse <properties> from the root pom.xml into a name->value map."""
+    root_pom = repo_path / "pom.xml"
+    if not root_pom.exists():
+        return {}
+
+    try:
+        tree = ET.parse(root_pom)
+    except ET.ParseError:
+        return {}
+
+    root = tree.getroot()
+    props_el = root.find(f"{MAVEN_NS}properties")
+    if props_el is None:
+        return {}
+
+    props: dict[str, str] = {}
+    for child in props_el:
+        # Strip Maven namespace from tag name
+        tag_name = child.tag.replace(MAVEN_NS, "")
+        value = (child.text or "").strip()
+        if value:
+            props[tag_name] = value
+
+    # One pass of self-resolution for nested ${prop} references
+    for key, value in props.items():
+        m = _PROPERTY_REF_RE.search(value)
+        if m and m.group(1) in props:
+            props[key] = _PROPERTY_REF_RE.sub(
+                lambda m2: props.get(m2.group(1), m2.group(0)), value,
+            )
+
+    return props
+
+
+def resolve_version(raw: str, properties: dict[str, str]) -> str:
+    """Resolve a version string, substituting ${property} references."""
+    if not raw:
+        return ""
+    m = _PROPERTY_REF_RE.fullmatch(raw)
+    if m:
+        return properties.get(m.group(1), "")
+    return raw
+
+
+def version_to_tag(version: str) -> str:
+    """Convert a Maven version to a git tag using WSO2 v-prefix convention."""
+    if not version or _VERSION_RANGE_RE.match(version):
+        return ""
+    return f"v{version}"
+
+
+# ---------------------------------------------------------------------------
 # Direct POM XML parsing (fast alternative to Maven)
 # ---------------------------------------------------------------------------
 
@@ -642,12 +703,15 @@ _SKIP_DIRS = {"test", "target", "node_modules", ".git", "src/test"}
 
 
 def parse_pom_dependencies_in_repo(
-    repo_path: Path, group_prefixes: list[str],
+    repo_path: Path,
+    group_prefixes: list[str],
+    properties: dict[str, str] | None = None,
 ) -> set[MavenArtifact]:
     """Extract WSO2 dependencies by parsing all pom.xml files directly.
 
     Much faster than mvn dependency:tree (milliseconds vs minutes).
     Captures direct dependencies but not transitive ones.
+    When *properties* is provided, resolves ${…} version references.
     """
     artifacts = set()
 
@@ -664,7 +728,7 @@ def parse_pom_dependencies_in_repo(
 
         root = tree.getroot()
 
-        # Extract <parent> groupId/artifactId
+        # Extract <parent> groupId/artifactId/version
         parent = root.find(f"{MAVEN_NS}parent")
         if parent is not None:
             gid_el = parent.find(f"{MAVEN_NS}groupId")
@@ -673,9 +737,13 @@ def parse_pom_dependencies_in_repo(
                 gid = (gid_el.text or "").strip()
                 aid = (aid_el.text or "").strip()
                 if any(gid.startswith(p) for p in group_prefixes):
-                    artifacts.add(MavenArtifact(gid, aid))
+                    ver_el = parent.find(f"{MAVEN_NS}version")
+                    ver = (ver_el.text or "").strip() if ver_el is not None else ""
+                    if properties:
+                        ver = resolve_version(ver, properties)
+                    artifacts.add(MavenArtifact(gid, aid, ver))
 
-        # Extract all <dependency> groupId/artifactId
+        # Extract all <dependency> groupId/artifactId/version
         for dep in root.findall(f".//{MAVEN_NS}dependency"):
             gid_el = dep.find(f"{MAVEN_NS}groupId")
             aid_el = dep.find(f"{MAVEN_NS}artifactId")
@@ -684,7 +752,11 @@ def parse_pom_dependencies_in_repo(
             gid = (gid_el.text or "").strip()
             aid = (aid_el.text or "").strip()
             if any(gid.startswith(p) for p in group_prefixes):
-                artifacts.add(MavenArtifact(gid, aid))
+                ver_el = dep.find(f"{MAVEN_NS}version")
+                ver = (ver_el.text or "").strip() if ver_el is not None else ""
+                if properties:
+                    ver = resolve_version(ver, properties)
+                artifacts.add(MavenArtifact(gid, aid, ver))
 
     return artifacts
 
@@ -870,6 +942,10 @@ def discover_repos(
 
     visited.add(seed_name)
 
+    # Parse properties from seed POM for version resolution
+    seed_properties = parse_pom_properties(seed_dest)
+    log.info(f"  Parsed {len(seed_properties)} properties from seed POM")
+
     # P2 profile discovery
     p2_artifacts = extract_p2_features(seed_dest)
     p2_repos: set[str] = set()
@@ -879,6 +955,8 @@ def discover_repos(
         entry = resolve_artifact(artifact)
         if entry and entry.name not in visited and entry.name != seed_name:
             entry.discovered_via = f"P2 profile ({artifact.group_id})"
+            ver = resolve_version(artifact.version, seed_properties) if artifact.version else ""
+            entry.tag = version_to_tag(ver)
             discovered[entry.name] = entry
             p2_repos.add(entry.name)
         elif not entry:
@@ -897,15 +975,22 @@ def discover_repos(
         seed_artifacts = run_dependency_tree(seed_dest, group_prefixes, maven_timeout)
         method = "maven dependency:tree"
     else:
-        seed_artifacts = parse_pom_dependencies_in_repo(seed_dest, group_prefixes)
+        seed_artifacts = parse_pom_dependencies_in_repo(
+            seed_dest, group_prefixes, properties=seed_properties,
+        )
         method = "POM XML parsing"
 
     for artifact in seed_artifacts:
         entry = resolve_artifact(artifact)
         if entry and entry.name not in visited and entry.name != seed_name:
+            artifact_tag = version_to_tag(artifact.version) if artifact.version else ""
             if entry.name not in discovered:
                 entry.discovered_via = f"{method} on {seed_name}"
+                entry.tag = artifact_tag
                 discovered[entry.name] = entry
+            elif not discovered[entry.name].tag and artifact_tag:
+                # Fill in tag if P2 discovery didn't have one
+                discovered[entry.name].tag = artifact_tag
             seed_dep_repos.add(entry.name)
     log.info(f"  {method}: discovered {len(seed_dep_repos - p2_repos)} additional repos")
 
@@ -928,7 +1013,7 @@ def discover_repos(
 
         # Batch clone all repos at this depth level
         to_clone = [
-            (name, discovered[name].url, None)
+            (name, discovered[name].url, discovered[name].tag or None)
             for name in current_level
             if not (work_dir / name / ".git").exists()
         ]
@@ -988,6 +1073,7 @@ def write_repos_yaml(repos: dict[str, RepoEntry], output_path: Path):
                 "name": entry.name,
                 "url": entry.url,
                 "shallow": entry.shallow,
+                **({"tag": entry.tag} if entry.tag else {}),
             }
             for entry in sorted(repos.values(), key=lambda e: e.name)
         ]
@@ -1015,7 +1101,8 @@ def print_summary(repos: dict[str, RepoEntry]):
         print(f"\n  {org}/ ({len(entries)} repos)")
         for entry in entries:
             via = f"  <- {entry.discovered_via}" if entry.discovered_via else ""
-            print(f"    {entry.name}{via}")
+            tag_info = f" @ {entry.tag}" if entry.tag else ""
+            print(f"    {entry.name}{tag_info}{via}")
 
     print()
 
