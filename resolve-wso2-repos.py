@@ -47,6 +47,7 @@ MAVEN_NS = "{http://maven.apache.org/POM/4.0.0}"
 # Data types
 # ---------------------------------------------------------------------------
 
+
 class MavenArtifact(NamedTuple):
     group_id: str
     artifact_id: str
@@ -484,7 +485,9 @@ def _gh_repo_exists(org: str, name: str) -> RepoEntry | None:
     try:
         result = subprocess.run(
             ["gh", "api", f"repos/{org}/{name}", "--jq", ".full_name"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         if result.returncode == 0 and result.stdout.strip():
             entry = RepoEntry(
@@ -509,9 +512,16 @@ def _gh_search_repo(query: str, org: str) -> RepoEntry | None:
 
     try:
         result = subprocess.run(
-            ["gh", "api", f"/search/repositories?q=org:{org}+{query}",
-             "--jq", ".items[0].full_name"],
-            capture_output=True, text=True, timeout=15,
+            [
+                "gh",
+                "api",
+                f"/search/repositories?q=org:{org}+{query}",
+                "--jq",
+                ".items[0].full_name",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         if result.returncode == 0 and result.stdout.strip():
             full_name = result.stdout.strip()
@@ -546,7 +556,7 @@ def resolve_via_github(group_id: str, artifact_id: str) -> RepoEntry | None:
     # e.g. org.wso2.carbon.apimgt -> carbon-apimgt
     for prefix in ("org.wso2.", "org.wso2.carbon.", "org.apache."):
         if group_id.startswith(prefix):
-            remainder = group_id[len(prefix):]
+            remainder = group_id[len(prefix) :]
             candidate = remainder.replace(".", "-")
             candidates.add(candidate)
             # Also try with "carbon-" prefix if stripped
@@ -594,6 +604,7 @@ def resolve_artifact(artifact: MavenArtifact) -> RepoEntry | None:
 # ---------------------------------------------------------------------------
 # P2 profile parsing
 # ---------------------------------------------------------------------------
+
 
 def extract_p2_features(product_path: Path) -> list[MavenArtifact]:
     """Parse the P2 profile POM to find bundled feature artifacts."""
@@ -672,7 +683,8 @@ def parse_pom_properties(repo_path: Path) -> dict[str, str]:
         m = _PROPERTY_REF_RE.search(value)
         if m and m.group(1) in props:
             props[key] = _PROPERTY_REF_RE.sub(
-                lambda m2: props.get(m2.group(1), m2.group(0)), value,
+                lambda m2: props.get(m2.group(1), m2.group(0)),
+                value,
             )
 
     return props
@@ -767,9 +779,9 @@ def parse_pom_dependencies_in_repo(
 
 # Regex to strip tree-drawing characters from mvn dependency:tree output
 _TREE_LINE_RE = re.compile(
-    r"^\[INFO\]\s+"        # [INFO] prefix
+    r"^\[INFO\]\s+"  # [INFO] prefix
     r"(?:[+\\|][\s\-]*)*"  # tree-drawing: +- \- |
-    r"(.+)$"               # the actual dependency coordinate
+    r"(.+)$"  # the actual dependency coordinate
 )
 
 
@@ -801,7 +813,9 @@ def parse_dependency_tree(output: str, group_prefixes: list[str]) -> set[MavenAr
 
 
 def run_dependency_tree(
-    repo_path: Path, group_prefixes: list[str], timeout: int = 600,
+    repo_path: Path,
+    group_prefixes: list[str],
+    timeout: int = 600,
 ) -> set[MavenArtifact]:
     """Run mvn dependency:tree on a repo and parse the output."""
     pom = repo_path / "pom.xml"
@@ -811,30 +825,40 @@ def run_dependency_tree(
 
     include_groups = ",".join(group_prefixes)
     cmd = [
-        "mvn", "dependency:tree",
+        "mvn",
+        "dependency:tree",
         f"-DincludeGroupIds={include_groups}",
         "-DskipTests",
         "--batch-mode",
-        "-f", str(pom),
+        "-f",
+        str(pom),
     ]
 
     log.info(f"Running mvn dependency:tree on {repo_path.name} (timeout {timeout}s)...")
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout,
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
         if result.returncode != 0:
-            log.warning(f"mvn dependency:tree failed for {repo_path.name} (exit {result.returncode})")
+            log.warning(
+                f"mvn dependency:tree failed for {repo_path.name} (exit {result.returncode})"
+            )
             # Still try to parse partial output
         return parse_dependency_tree(result.stdout, group_prefixes)
     except subprocess.TimeoutExpired:
-        log.warning(f"mvn dependency:tree timed out for {repo_path.name} after {timeout}s")
+        log.warning(
+            f"mvn dependency:tree timed out for {repo_path.name} after {timeout}s"
+        )
         return set()
 
 
 # ---------------------------------------------------------------------------
 # Git operations
 # ---------------------------------------------------------------------------
+
 
 def clone_at_tag(url: str, dest: Path, tag: str | None = None) -> bool:
     """Clone a repo, optionally at a specific tag. Falls back to default branch."""
@@ -857,7 +881,13 @@ def clone_at_tag(url: str, dest: Path, tag: str | None = None) -> bool:
             log.warning(f"  Tag {tag} not found for {dest.name}, using default branch")
             cmd_fallback = ["git", "clone", "--depth", "1", url, str(dest)]
             try:
-                subprocess.run(cmd_fallback, capture_output=True, text=True, timeout=120, check=True)
+                subprocess.run(
+                    cmd_fallback,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    check=True,
+                )
                 log.info(f"  Cloned {dest.name} (default branch)")
                 return True
             except subprocess.CalledProcessError as e:
@@ -873,6 +903,7 @@ def clone_at_tag(url: str, dest: Path, tag: str | None = None) -> bool:
 # ---------------------------------------------------------------------------
 # Parallel cloning
 # ---------------------------------------------------------------------------
+
 
 def clone_batch(
     entries: list[tuple[str, str, str | None]],
@@ -901,6 +932,7 @@ def clone_batch(
 # ---------------------------------------------------------------------------
 # BFS discovery
 # ---------------------------------------------------------------------------
+
 
 def discover_repos(
     seed_repo: str,
@@ -933,7 +965,9 @@ def discover_repos(
     visited: set[str] = set()
 
     # --- Phase 1: Seed from product repo ---
-    log.info(f"Phase 1: Seeding from {seed_org}/{seed_name}" + (f" @ {tag}" if tag else ""))
+    log.info(
+        f"Phase 1: Seeding from {seed_org}/{seed_name}" + (f" @ {tag}" if tag else "")
+    )
 
     seed_dest = work_dir / seed_name
     if not clone_at_tag(seed_url, seed_dest, tag):
@@ -955,7 +989,11 @@ def discover_repos(
         entry = resolve_artifact(artifact)
         if entry and entry.name not in visited and entry.name != seed_name:
             entry.discovered_via = f"P2 profile ({artifact.group_id})"
-            ver = resolve_version(artifact.version, seed_properties) if artifact.version else ""
+            ver = (
+                resolve_version(artifact.version, seed_properties)
+                if artifact.version
+                else ""
+            )
             entry.tag = version_to_tag(ver)
             discovered[entry.name] = entry
             p2_repos.add(entry.name)
@@ -976,7 +1014,9 @@ def discover_repos(
         method = "maven dependency:tree"
     else:
         seed_artifacts = parse_pom_dependencies_in_repo(
-            seed_dest, group_prefixes, properties=seed_properties,
+            seed_dest,
+            group_prefixes,
+            properties=seed_properties,
         )
         method = "POM XML parsing"
 
@@ -992,7 +1032,9 @@ def discover_repos(
                 # Fill in tag if P2 discovery didn't have one
                 discovered[entry.name].tag = artifact_tag
             seed_dep_repos.add(entry.name)
-    log.info(f"  {method}: discovered {len(seed_dep_repos - p2_repos)} additional repos")
+    log.info(
+        f"  {method}: discovered {len(seed_dep_repos - p2_repos)} additional repos"
+    )
 
     # --- Phase 2: BFS expansion with batch cloning ---
     if max_depth > 0:
@@ -1018,7 +1060,9 @@ def discover_repos(
             if not (work_dir / name / ".git").exists()
         ]
         if to_clone:
-            log.info(f"  Cloning {len(to_clone)} repos in parallel (max {clone_workers} workers)...")
+            log.info(
+                f"  Cloning {len(to_clone)} repos in parallel (max {clone_workers} workers)..."
+            )
             clone_results = clone_batch(to_clone, work_dir, clone_workers)
         else:
             clone_results = {}
@@ -1032,22 +1076,42 @@ def discover_repos(
             visited.add(repo_name)
 
             repo_dest = work_dir / repo_name
-            if not (repo_dest / ".git").exists() and not clone_results.get(repo_name, False):
+            if not (repo_dest / ".git").exists() and not clone_results.get(
+                repo_name, False
+            ):
                 log.warning(f"    {repo_name}: clone failed, skipping")
                 continue
 
+            # Parse properties from this repo's POM for version resolution
+            repo_properties = parse_pom_properties(repo_dest)
+
             # Discover dependencies
             if use_maven:
-                new_artifacts = run_dependency_tree(repo_dest, group_prefixes, maven_timeout)
+                new_artifacts = run_dependency_tree(
+                    repo_dest, group_prefixes, maven_timeout
+                )
             else:
-                new_artifacts = parse_pom_dependencies_in_repo(repo_dest, group_prefixes)
+                new_artifacts = parse_pom_dependencies_in_repo(
+                    repo_dest,
+                    group_prefixes,
+                    properties=repo_properties,
+                )
 
             new_count = 0
             for artifact in new_artifacts:
                 resolved = resolve_artifact(artifact)
-                if resolved and resolved.name not in visited and resolved.name != seed_name:
+                if (
+                    resolved
+                    and resolved.name not in visited
+                    and resolved.name != seed_name
+                ):
                     if resolved.name not in discovered:
-                        resolved.discovered_via = f"{'maven' if use_maven else 'POM parsing'} on {repo_name}"
+                        resolved.discovered_via = (
+                            f"{'maven' if use_maven else 'POM parsing'} on {repo_name}"
+                        )
+                        resolved.tag = (
+                            version_to_tag(artifact.version) if artifact.version else ""
+                        )
                         discovered[resolved.name] = resolved
                         new_count += 1
                         next_level.append(resolved.name)
@@ -1064,6 +1128,7 @@ def discover_repos(
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
+
 
 def write_repos_yaml(repos: dict[str, RepoEntry], output_path: Path):
     """Write repos.yaml in the format expected by orchestrator.py."""
@@ -1088,9 +1153,9 @@ def write_repos_yaml(repos: dict[str, RepoEntry], output_path: Path):
 
 def print_summary(repos: dict[str, RepoEntry]):
     """Print a human-readable summary of discovered repos."""
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"  Discovered {len(repos)} repositories")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     # Group by org
     by_org: dict[str, list[RepoEntry]] = {}
@@ -1110,6 +1175,7 @@ def print_summary(repos: dict[str, RepoEntry]):
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def main():
     parser = argparse.ArgumentParser(
